@@ -1,0 +1,108 @@
+# Amazon Reviews 2023 推荐系统报告
+
+## 任务与评估
+
+本项目按 `PRD.md` 要求，在 `Industrial_and_Scientific`、`Musical_Instruments`、`CDs_and_Vinyl` 三个 Amazon Reviews 2023 5-Core 子集上完成 Top-10 序列推荐。
+
+- 预测目标：`parent_asin`
+- 时序依据：`timestamp` 升序后形成的 `history`
+- 输出格式：`{"user_id":"...","predictions":["..."],"ground_truth":"..."}`
+- 核心指标：单 Ground Truth 的 `NDCG@10`
+
+## 模型
+
+当前交付模型为 `hybrid`，不依赖第三方库，适合在当前环境直接复现。
+
+```mermaid
+flowchart LR
+    A["train prefixes"] --> B["last-item transition"]
+    A --> C["last-2 pair transition"]
+    A --> D["recency-weighted co-occurrence"]
+    A --> E["global popularity fallback"]
+    F["meta title/categories/rating"] --> G["lexical metadata candidates"]
+    B --> H["score fusion"]
+    C --> H
+    D --> H
+    E --> H
+    G --> H
+    H --> I["filter user history"]
+    I --> J["Top-10 parent_asin"]
+```
+
+融合排序信号：
+
+- `last-item transition`：最近一个商品到下一个商品的转移计数。
+- `pair transition`：最近两个商品组成的二阶转移。
+- `recency co-occurrence`：历史尾部商品对目标商品的共现，按距离衰减。
+- `metadata candidates`：从 `meta_*.jsonl.gz` 的标题、类目、店铺词中召回相似商品。
+- `popularity fallback`：保证每个用户恰好输出 10 个未交互商品。
+
+## 最终测试集结果
+
+最终产物位于 `outputs/`，命令为：
+
+```powershell
+python run.py run-all --data-dir data --output-dir outputs --model hybrid --use-meta
+```
+
+| Category | Rows | Hit@10 | NDCG@10 | Prediction file |
+| :--- | ---: | ---: | ---: | :--- |
+| Industrial_and_Scientific | 50,985 | 0.038188 | 0.023080 | `outputs/Industrial_and_Scientific_test_pred.jsonl` |
+| Musical_Instruments | 57,439 | 0.049949 | 0.029289 | `outputs/Musical_Instruments_test_pred.jsonl` |
+| CDs_and_Vinyl | 123,876 | 0.079846 | 0.052160 | `outputs/CDs_and_Vinyl_test_pred.jsonl` |
+
+## 验证集消融
+
+| Category | Popularity NDCG@10 | Hybrid No Meta NDCG@10 | Hybrid + Meta NDCG@10 |
+| :--- | ---: | ---: | ---: |
+| Industrial_and_Scientific | 0.009923 | 0.027715 | 0.028666 |
+| Musical_Instruments | 0.015641 | 0.030353 | 0.031180 |
+| CDs_and_Vinyl | 0.003038 | 0.055937 | 0.057113 |
+
+结论：顺序信号相比纯热度有明显提升；轻量 metadata 召回在三个类目验证集上均带来正向增益。
+
+上述对照可以用统一实验入口复现：
+
+```powershell
+python run.py run-experiments --data-dir data --output-dir experiments --splits valid
+```
+
+## 高级路线：SASRec Reranker
+
+已实现 PRD 推荐的 SASRec 深度序列模型路线，作为二阶段重排器使用：
+
+1. `hybrid + meta` 先召回 Top-N 候选。
+2. SASRec 使用用户历史序列编码下一个商品偏好。
+3. 对候选集合打分重排，输出最终 Top-10。
+
+当前 `recom` 环境已配置 GPU 版 PyTorch：
+
+- `torch 2.11.0+cu128`
+- CUDA 可用：`True`
+- GPU：`NVIDIA GeForce RTX 5060 Laptop GPU`
+
+GPU smoke test 命令：
+
+```powershell
+python run.py sasrec-rerank --category Musical_Instruments --data-dir data --output-dir experiments_sasrec_gpu_smoke --splits valid --use-meta --max-train-rows 2048 --candidate-k 50 --max-len 40 --hidden-size 32 --num-layers 1 --num-heads 2 --batch-size 128 --negatives 16 --epochs 1 --device auto
+```
+
+Smoke test 结果：
+
+| Category | Train Rows | Device | Hit@10 | NDCG@10 |
+| :--- | ---: | :--- | ---: | ---: |
+| Musical_Instruments | 2,048 | cuda | 0.053396 | 0.030616 |
+
+这个 smoke test 的训练行数很少，用于验证 GPU 训练/推理闭环，不代表最终调参上限。完整训练可去掉 `--max-train-rows 2048`，并适当增大 `--hidden-size`、`--num-layers` 和 `--epochs`。
+
+## 复现与自检
+
+已完成：
+
+- 固定随机种子：`2026`
+- 标准库实现：无需 pandas/numpy/torch
+- 单元测试：`python -m unittest discover -s tests`
+- 格式自检：所有 `*_pred.jsonl` 行均包含 10 个无重复预测，且 `user_id`、`ground_truth` 字段完整
+- 独立评估入口：`python run.py evaluate-file --predictions outputs/CDs_and_Vinyl_test_pred.jsonl`
+
+后续若追求更高分，可以继续调参 SASRec，或加入 Sentence-BERT 文本向量模型，并继续沿用当前评估、输出和报告结构。

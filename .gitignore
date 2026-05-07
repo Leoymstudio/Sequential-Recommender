@@ -1,0 +1,26 @@
+# Large local datasets
+data/
+
+# Generated predictions, metrics, and experiment artifacts
+outputs/
+outputs_*/
+experiments/
+experiments_*/
+
+# Python cache and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local config
+.venv/
+venv/
+*.env
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

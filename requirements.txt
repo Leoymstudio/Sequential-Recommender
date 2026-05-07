@@ -1,0 +1,3 @@
+# The baseline pipeline intentionally uses only the Python standard library.
+# Optional research extensions can add numpy/pandas/torch later without changing
+# the shipped command-line interface.
