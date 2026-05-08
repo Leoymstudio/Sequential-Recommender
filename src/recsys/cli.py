@@ -10,7 +10,7 @@ from .config import DEFAULT_CATEGORIES, DEFAULT_SEED, DEFAULT_TOP_K
 from .experiments import run_experiment_grid
 from .metrics import evaluate_prediction_file
 from .pipeline import run_category
-from .sasrec import SasRecConfig, TorchUnavailableError, run_sasrec_rerank_category
+from .sasrec import SasRecConfig, TorchUnavailableError, run_sasrec_rerank_category, run_sasrec_rerank_grid
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,24 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_sas.add_argument("--output-dir", default="outputs_sasrec")
     p_sas.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
     p_sas.add_argument("--use-meta", action="store_true")
-    p_sas.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    p_sas.add_argument("--max-len", type=int, default=50)
-    p_sas.add_argument("--hidden-size", type=int, default=64)
-    p_sas.add_argument("--num-heads", type=int, default=2)
-    p_sas.add_argument("--num-layers", type=int, default=2)
-    p_sas.add_argument("--dropout", type=float, default=0.2)
-    p_sas.add_argument("--epochs", type=int, default=1)
-    p_sas.add_argument("--batch-size", type=int, default=256)
-    p_sas.add_argument("--negatives", type=int, default=64)
-    p_sas.add_argument("--lr", type=float, default=0.001)
-    p_sas.add_argument("--candidate-k", type=int, default=100)
-    p_sas.add_argument(
-        "--max-train-rows",
-        type=int,
-        default=0,
-        help="0 means use all train rows; set a small value for quick smoke tests",
-    )
-    p_sas.add_argument("--device", default="auto")
+    add_sasrec_args(p_sas)
+
+    p_sas_grid = sub.add_parser("sasrec-grid", help="Run SASRec reranker across multiple categories")
+    p_sas_grid.add_argument("--data-dir", default="data")
+    p_sas_grid.add_argument("--output-dir", default="experiments_sasrec")
+    p_sas_grid.add_argument("--categories", nargs="+", default=list(DEFAULT_CATEGORIES), choices=DEFAULT_CATEGORIES)
+    p_sas_grid.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
+    p_sas_grid.add_argument("--use-meta", action="store_true")
+    add_sasrec_args(p_sas_grid)
     return parser
 
 
@@ -136,21 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "sasrec-rerank":
-        config = SasRecConfig(
-            max_len=args.max_len,
-            hidden_size=args.hidden_size,
-            num_heads=args.num_heads,
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            negatives=args.negatives,
-            lr=args.lr,
-            candidate_k=args.candidate_k,
-            max_train_rows=args.max_train_rows,
-            seed=args.seed,
-            device=args.device,
-        )
+        config = sasrec_config_from_args(args)
         try:
             result = run_sasrec_rerank_category(
                 category=args.category,
@@ -165,8 +142,68 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "sasrec-grid":
+        config = sasrec_config_from_args(args)
+        try:
+            result = run_sasrec_rerank_grid(
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                categories=tuple(args.categories),
+                use_meta=args.use_meta,
+                splits=tuple(args.splits),
+                config=config,
+            )
+        except TorchUnavailableError as exc:
+            parser.exit(1, f"{exc}\n")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
     parser.error(f"Unsupported command: {args.command}")
     return 2
+
+def add_sasrec_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--max-len", type=int, default=50)
+    parser.add_argument("--hidden-size", type=int, default=64)
+    parser.add_argument("--num-heads", type=int, default=2)
+    parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--negatives", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--candidate-k", type=int, default=100)
+    parser.add_argument("--base-rank-weight", type=float, default=1.0)
+    parser.add_argument("--sasrec-score-weight", type=float, default=0.03)
+    parser.add_argument("--loss", choices=("ce", "bce"), default="ce")
+    parser.add_argument(
+        "--max-train-rows",
+        type=int,
+        default=0,
+        help="0 means use all train rows; set a small value for quick smoke tests",
+    )
+    parser.add_argument("--device", default="auto")
+
+
+def sasrec_config_from_args(args: argparse.Namespace) -> SasRecConfig:
+    return SasRecConfig(
+        max_len=args.max_len,
+        hidden_size=args.hidden_size,
+        num_heads=args.num_heads,
+        num_layers=args.num_layers,
+        dropout=args.dropout,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        negatives=args.negatives,
+        lr=args.lr,
+        candidate_k=args.candidate_k,
+        base_rank_weight=args.base_rank_weight,
+        sasrec_score_weight=args.sasrec_score_weight,
+        loss=args.loss,
+        max_train_rows=args.max_train_rows,
+        seed=args.seed,
+        device=args.device,
+    )
 
 
 if __name__ == "__main__":

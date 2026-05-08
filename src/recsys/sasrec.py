@@ -11,10 +11,12 @@ import json
 import math
 import random
 import time
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .config import DEFAULT_CATEGORIES
 from .data import InteractionRow, category_csv_path, iter_interactions, tail_history, write_prediction_row
 from .metrics import ndcg_at_k
 from .pipeline import build_model
@@ -40,6 +42,9 @@ class SasRecConfig:
     negatives: int = 64
     lr: float = 0.001
     candidate_k: int = 100
+    base_rank_weight: float = 1.0
+    sasrec_score_weight: float = 0.03
+    loss: str = "ce"
     max_train_rows: int = 0
     seed: int = 2026
     device: str = "auto"
@@ -109,8 +114,9 @@ if nn is not None:
             )
             padding_mask = seq.eq(0)
             encoded = self.encoder(x, mask=causal_mask, src_key_padding_mask=padding_mask)
-            lengths = seq.ne(0).sum(dim=1).clamp(min=1) - 1
-            return encoded[torch.arange(batch_size, device=seq.device), lengths]
+            # Sequences are left-padded by _pad_sequences, so the most recent
+            # item is always at the right-most position for non-empty histories.
+            return encoded[:, -1, :]
 
         def score(self, seq: "torch.Tensor", candidates: "torch.Tensor") -> "torch.Tensor":
             hidden = self.encode(seq)
@@ -149,7 +155,12 @@ def run_sasrec_rerank_category(
     mapper = ItemMapper(getattr(base, "item_universe"))
     model = SASRecModel(mapper.size, cfg).to(device)
     optimizer = torch_mod.optim.AdamW(model.parameters(), lr=cfg.lr)
-    loss_fn = torch_mod.nn.BCEWithLogitsLoss()
+    if cfg.loss == "bce":
+        loss_fn = torch_mod.nn.BCEWithLogitsLoss()
+    elif cfg.loss == "ce":
+        loss_fn = torch_mod.nn.CrossEntropyLoss()
+    else:
+        raise ValueError(f"Unsupported SASRec loss: {cfg.loss}")
 
     train_path = category_csv_path(data_dir, category, "train")
     train_metrics = _train_sasrec(
@@ -196,6 +207,100 @@ def run_sasrec_rerank_category(
     return result
 
 
+def run_sasrec_rerank_grid(
+    data_dir: str | Path,
+    output_dir: str | Path,
+    categories: tuple[str, ...] = DEFAULT_CATEGORIES,
+    use_meta: bool = True,
+    splits: tuple[str, ...] = ("valid",),
+    config: SasRecConfig | None = None,
+) -> dict:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cfg = config or SasRecConfig()
+    results = []
+    for category in categories:
+        category_dir = output_dir / category
+        result = run_sasrec_rerank_category(
+            category=category,
+            data_dir=data_dir,
+            output_dir=category_dir,
+            use_meta=use_meta,
+            splits=splits,
+            config=cfg,
+        )
+        results.append(result)
+
+    summary = _flatten_sasrec_results(results)
+    _write_sasrec_summary(output_dir, summary)
+    payload = {
+        "output_dir": str(output_dir),
+        "model": "sasrec_rerank",
+        "use_meta": use_meta,
+        "splits": list(splits),
+        "config": cfg.__dict__,
+        "results": results,
+        "summary": summary,
+    }
+    summary_path = output_dir / "sasrec_summary.json"
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload["summary_file"] = str(summary_path)
+    return payload
+
+
+def _flatten_sasrec_results(results: list[dict]) -> list[dict]:
+    rows = []
+    for result in results:
+        for split in result.get("splits", []):
+            rows.append(
+                {
+                    "category": result["category"],
+                    "split": split["split"],
+                    "model": result["model"],
+                    "use_meta": result["use_meta"],
+                    "resolved_device": result.get("resolved_device", ""),
+                    "train_rows": result.get("train", {}).get("rows_seen", 0),
+                    "loss_mean": result.get("train", {}).get("loss_mean", 0.0),
+                    "rows": split["rows"],
+                    "hit@10": split["hit@10"],
+                    "ndcg@10": split["ndcg@10"],
+                    "seconds_total": result.get("seconds_total", 0.0),
+                    "prediction_file": split["prediction_file"],
+                }
+            )
+    return rows
+
+
+def _write_sasrec_summary(output_dir: Path, rows: list[dict]) -> None:
+    if not rows:
+        return
+    csv_path = output_dir / "sasrec_summary.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    md_path = output_dir / "sasrec_summary.md"
+    headers = ["category", "split", "resolved_device", "train_rows", "hit@10", "ndcg@10", "seconds_total"]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| :--- | :--- | :--- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        lines.append(
+            "| {category} | {split} | {device} | {train_rows} | {hit:.6f} | {ndcg:.6f} | {seconds:.2f} |".format(
+                category=row["category"],
+                split=row["split"],
+                device=row["resolved_device"],
+                train_rows=row["train_rows"],
+                hit=row["hit@10"],
+                ndcg=row["ndcg@10"],
+                seconds=row["seconds_total"],
+            )
+        )
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _train_sasrec(model, optimizer, loss_fn, train_path: Path, mapper: ItemMapper, cfg: SasRecConfig, device) -> dict:
     torch_mod, _ = require_torch()
     losses: list[float] = []
@@ -233,17 +338,20 @@ def _train_batch(model, optimizer, loss_fn, seqs, positives, mapper: ItemMapper,
     torch_mod, _ = require_torch()
     seq_tensor = _pad_sequences(seqs, cfg.max_len, device)
     candidates = []
-    labels = []
     for pos in positives:
         negs = _sample_negatives(mapper.size, pos, cfg.negatives)
         candidates.append([pos] + negs)
-        labels.append([1.0] + [0.0] * len(negs))
     cand_tensor = torch_mod.tensor(candidates, dtype=torch_mod.long, device=device)
-    label_tensor = torch_mod.tensor(labels, dtype=torch_mod.float32, device=device)
 
     optimizer.zero_grad(set_to_none=True)
     logits = model.score(seq_tensor, cand_tensor)
-    loss = loss_fn(logits, label_tensor)
+    if cfg.loss == "bce":
+        labels = [[1.0] + [0.0] * cfg.negatives for _ in positives]
+        label_tensor = torch_mod.tensor(labels, dtype=torch_mod.float32, device=device)
+        loss = loss_fn(logits, label_tensor)
+    else:
+        label_tensor = torch_mod.zeros(len(positives), dtype=torch_mod.long, device=device)
+        loss = loss_fn(logits, label_tensor)
     loss.backward()
     optimizer.step()
     return float(loss.detach().cpu().item())
@@ -340,11 +448,22 @@ def _rerank_candidate_batch(model, mapper: ItemMapper, batch, cfg: SasRecConfig,
         if idx in fallback_set:
             results.append(original_candidates[:10])
             continue
-        scored = [
-            (item, score)
-            for item, item_id, score in zip(texts, ids, scores)
-            if item_id
-        ]
+        valid_scores = [score for item_id, score in zip(ids, scores) if item_id]
+        mean_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+        variance = (
+            sum((score - mean_score) ** 2 for score in valid_scores) / len(valid_scores)
+            if valid_scores
+            else 0.0
+        )
+        std_score = math.sqrt(variance) if variance > 1e-12 else 1.0
+        scored = []
+        for rank, (item, item_id, raw_score) in enumerate(zip(texts, ids, scores), start=1):
+            if not item_id:
+                continue
+            base_score = 1.0 / math.log2(rank + 1)
+            sasrec_score = (raw_score - mean_score) / std_score
+            final_score = cfg.base_rank_weight * base_score + cfg.sasrec_score_weight * sasrec_score
+            scored.append((item, final_score))
         ranked = sorted(scored, key=lambda kv: (-kv[1], kv[0]))
         final = [item for item, _ in ranked[:10]]
         if len(final) < 10:
@@ -373,10 +492,20 @@ def _rerank_candidates(model, mapper: ItemMapper, row: InteractionRow, candidate
     with torch_mod.no_grad():
         scores = model.score(seq_tensor, cand_ids).squeeze(0).detach().cpu().tolist()
 
-    ranked = sorted(
-        zip([item for item, _ in encoded_candidates], scores),
-        key=lambda kv: (-kv[1], kv[0]),
+    valid_scores = list(scores)
+    mean_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+    variance = (
+        sum((score - mean_score) ** 2 for score in valid_scores) / len(valid_scores)
+        if valid_scores
+        else 0.0
     )
+    std_score = math.sqrt(variance) if variance > 1e-12 else 1.0
+    fused = []
+    for rank, ((item, _), raw_score) in enumerate(zip(encoded_candidates, scores), start=1):
+        base_score = 1.0 / math.log2(rank + 1)
+        sasrec_score = (raw_score - mean_score) / std_score
+        fused.append((item, cfg.base_rank_weight * base_score + cfg.sasrec_score_weight * sasrec_score))
+    ranked = sorted(fused, key=lambda kv: (-kv[1], kv[0]))
     final = [item for item, _ in ranked[:10]]
     if len(final) < 10:
         seen = set(final)

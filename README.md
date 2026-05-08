@@ -98,6 +98,18 @@ python run.py sasrec-rerank --category Musical_Instruments --data-dir data --out
 
 `--device auto` 会优先使用 CUDA GPU，若不可用才回退 CPU。
 
+三类目批量跑 SASRec：
+
+```powershell
+python run.py sasrec-grid --data-dir data --output-dir experiments_sasrec_full_valid --splits valid --use-meta --candidate-k 50 --max-len 50 --hidden-size 64 --num-layers 2 --num-heads 2 --batch-size 512 --negatives 64 --epochs 1 --device auto --base-rank-weight 1.0 --sasrec-score-weight 0.03 --loss ce
+```
+
+SASRec 默认作为二阶段重排特征与 hybrid 排名融合：
+
+- `--base-rank-weight`：保留第一阶段 hybrid 排序的权重。
+- `--sasrec-score-weight`：SASRec 标准化分数的权重，默认较小以避免未充分训练时破坏候选顺序。
+- `--loss ce|bce`：默认 `ce`，即 sampled softmax / cross-entropy；`bce` 保留为消融对照。
+
 ## 架构
 
 ```mermaid

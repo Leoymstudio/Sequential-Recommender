@@ -95,6 +95,28 @@ Smoke test 结果：
 
 这个 smoke test 的训练行数很少，用于验证 GPU 训练/推理闭环，不代表最终调参上限。完整训练可去掉 `--max-train-rows 2048`，并适当增大 `--hidden-size`、`--num-layers` 和 `--epochs`。
 
+当前版本还新增了正式 SASRec 网格入口：
+
+```powershell
+python run.py sasrec-grid --data-dir data --output-dir experiments_sasrec_full_valid --splits valid --use-meta --candidate-k 50 --max-len 50 --hidden-size 64 --num-layers 2 --num-heads 2 --batch-size 512 --negatives 64 --epochs 1 --device auto --base-rank-weight 1.0 --sasrec-score-weight 0.03 --loss ce
+```
+
+SASRec 修正与实验更新：
+
+- 修正左填充序列的表示位置：现在取最右侧最近交互位置，而不是 padding 区域。
+- 重排方式从纯 SASRec logits 改为 `hybrid base rank + normalized SASRec score` 融合。
+- 训练目标默认使用 sampled softmax / cross-entropy，`--loss bce` 可用于消融。
+
+全量训练 1 epoch 的验证集结果如下：
+
+| Category | Train Rows | Device | Hit@10 | NDCG@10 |
+| :--- | ---: | :--- | ---: | ---: |
+| Industrial_and_Scientific | 259,992 | cuda | 0.046641 | 0.028669 |
+| Musical_Instruments | 339,519 | cuda | 0.054284 | 0.031180 |
+| CDs_and_Vinyl | 1,181,136 | cuda | 0.087846 | 0.057104 |
+
+结论：GPU SASRec 已经作为 PRD 中的深度序列路线完成工程化闭环，但在当前二阶段候选与 1 epoch 设置下，相比 `hybrid + meta` 主要是持平，尚未形成稳定显著提升。下一步更值得投入的是 SentenceTransformer 文本向量和 LightGCN 图向量，再与 SASRec 分数做多路融合。
+
 ## 复现与自检
 
 已完成：
