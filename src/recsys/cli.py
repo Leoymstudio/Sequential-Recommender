@@ -11,6 +11,12 @@ from .experiments import run_experiment_grid
 from .metrics import evaluate_prediction_file
 from .pipeline import run_category
 from .sasrec import SasRecConfig, TorchUnavailableError, run_sasrec_rerank_category, run_sasrec_rerank_grid
+from .text_rerank import (
+    SentenceTransformerUnavailableError,
+    TextRerankConfig,
+    run_text_rerank_category,
+    run_text_rerank_grid,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +73,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_sas_grid.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
     p_sas_grid.add_argument("--use-meta", action="store_true")
     add_sasrec_args(p_sas_grid)
+
+    p_text = sub.add_parser("text-rerank", help="Rerank hybrid candidates with metadata text embeddings")
+    p_text.add_argument("--category", required=True, choices=DEFAULT_CATEGORIES)
+    p_text.add_argument("--data-dir", default="data")
+    p_text.add_argument("--output-dir", default="outputs_text")
+    p_text.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
+    add_text_rerank_args(p_text)
+
+    p_text_grid = sub.add_parser("text-grid", help="Run text reranker across multiple categories")
+    p_text_grid.add_argument("--data-dir", default="data")
+    p_text_grid.add_argument("--output-dir", default="experiments_text")
+    p_text_grid.add_argument("--categories", nargs="+", default=list(DEFAULT_CATEGORIES), choices=DEFAULT_CATEGORIES)
+    p_text_grid.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
+    add_text_rerank_args(p_text_grid)
     return parser
 
 
@@ -158,6 +178,36 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "text-rerank":
+        config = text_rerank_config_from_args(args)
+        try:
+            result = run_text_rerank_category(
+                category=args.category,
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                splits=tuple(args.splits),
+                config=config,
+            )
+        except SentenceTransformerUnavailableError as exc:
+            parser.exit(1, f"{exc}\n")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "text-grid":
+        config = text_rerank_config_from_args(args)
+        try:
+            result = run_text_rerank_grid(
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                categories=tuple(args.categories),
+                splits=tuple(args.splits),
+                config=config,
+            )
+        except SentenceTransformerUnavailableError as exc:
+            parser.exit(1, f"{exc}\n")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
@@ -203,6 +253,40 @@ def sasrec_config_from_args(args: argparse.Namespace) -> SasRecConfig:
         max_train_rows=args.max_train_rows,
         seed=args.seed,
         device=args.device,
+    )
+
+
+def add_text_rerank_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--text-backend", choices=("hashing", "sentence-transformer"), default="hashing")
+    parser.add_argument("--text-model", default="sentence-transformers/all-MiniLM-L6-v2")
+    parser.add_argument("--embedding-dim", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--candidate-k", type=int, default=50)
+    parser.add_argument("--max-history-items", type=int, default=3)
+    parser.add_argument("--base-rank-weight", type=float, default=1.0)
+    parser.add_argument("--text-score-weight", type=float, default=0.05)
+    parser.add_argument("--no-meta", action="store_true", help="Disable lexical metadata in first-stage hybrid model")
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--cache-dir", default="text_cache")
+    parser.add_argument("--local-files-only", action="store_true", help="Load SentenceTransformer from local cache only")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+
+
+def text_rerank_config_from_args(args: argparse.Namespace) -> TextRerankConfig:
+    return TextRerankConfig(
+        backend=args.text_backend,
+        model_name=args.text_model,
+        embedding_dim=args.embedding_dim,
+        batch_size=args.batch_size,
+        candidate_k=args.candidate_k,
+        max_history_items=args.max_history_items,
+        base_rank_weight=args.base_rank_weight,
+        text_score_weight=args.text_score_weight,
+        use_meta=not args.no_meta,
+        device=args.device,
+        cache_dir=args.cache_dir,
+        local_files_only=args.local_files_only,
+        seed=args.seed,
     )
 
 

@@ -117,6 +117,44 @@ SASRec 修正与实验更新：
 
 结论：GPU SASRec 已经作为 PRD 中的深度序列路线完成工程化闭环，但在当前二阶段候选与 1 epoch 设置下，相比 `hybrid + meta` 主要是持平，尚未形成稳定显著提升。下一步更值得投入的是 SentenceTransformer 文本向量和 LightGCN 图向量，再与 SASRec 分数做多路融合。
 
+## 文本增强：SentenceTransformer Reranker
+
+已实现 PRD 中的 `BERT / SentenceTransformer` 文本增强路线：
+
+1. 从 `meta_*.jsonl.gz` 读取 `title`、`features`、`description`、`categories`、`store`。
+2. 为每个 `parent_asin` 构建文本向量。
+3. 用用户最近交互商品的文本向量均值作为查询向量。
+4. 对 `hybrid + meta` 召回的 Top-50 候选进行 `base rank + text similarity` 融合重排。
+
+支持两种后端：
+
+- `hashing`：无需下载模型，使用哈希词向量，适合快速消融。
+- `sentence-transformer`：使用 `sentence-transformers/all-MiniLM-L6-v2`，当前在 GPU `cuda` 上编码，向量维度 384。
+
+复现命令：
+
+```powershell
+python run.py text-grid --data-dir data --output-dir experiments_text_st_valid --splits valid --text-backend sentence-transformer --text-model sentence-transformers/all-MiniLM-L6-v2 --candidate-k 50 --batch-size 256 --max-history-items 3 --base-rank-weight 1.0 --text-score-weight 0.05 --device auto --local-files-only
+```
+
+验证集结果：
+
+| Category | Hybrid + Meta NDCG@10 | Hashing Text NDCG@10 | SentenceTransformer NDCG@10 |
+| :--- | ---: | ---: | ---: |
+| Industrial_and_Scientific | 0.028666 | 0.028801 | 0.028851 |
+| Musical_Instruments | 0.031180 | 0.031270 | 0.031320 |
+| CDs_and_Vinyl | 0.057113 | 0.057218 | 0.057290 |
+
+测试集结果：
+
+| Category | Hybrid + Meta NDCG@10 | SentenceTransformer NDCG@10 |
+| :--- | ---: | ---: |
+| Industrial_and_Scientific | 0.023080 | 0.023234 |
+| Musical_Instruments | 0.029289 | 0.029348 |
+| CDs_and_Vinyl | 0.052160 | 0.052340 |
+
+结论：文本向量增强在三类验证集和测试集上均稳定提升，是目前比 SASRec 更直接有效的高级路线。
+
 ## 复现与自检
 
 已完成：

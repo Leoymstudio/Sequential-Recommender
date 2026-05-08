@@ -37,13 +37,20 @@ python run.py run-all --data-dir data --output-dir outputs --model hybrid --use-
 & 'D:\miniconda3\envs\recom\python.exe' run.py run-all --data-dir data --output-dir outputs --model hybrid --use-meta
 ```
 
-环境文件见 `environment.yml`。当前 baseline 只依赖 Python 标准库，不需要额外安装 pandas、numpy 或 torch。
+环境文件见 `environment.yml`。当前基础与文本实验需要 `numpy`；GPU SASRec 需要 PyTorch；SentenceTransformer 文本增强需要 `sentence-transformers`。
 
 高级 SASRec 路线需要 PyTorch。若机器有 NVIDIA GPU，推荐安装 CUDA 版：
 
 ```powershell
 python -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+SentenceTransformer 文本增强依赖：
+
+```powershell
+python -m pip install -r requirements-text.txt
+python -c "from sentence_transformers import SentenceTransformer; import torch; m=SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cuda' if torch.cuda.is_available() else 'cpu'); print(m.encode(['guitar strings']).shape)"
 ```
 
 ```powershell
@@ -97,6 +104,18 @@ python run.py sasrec-rerank --category Musical_Instruments --data-dir data --out
 ```
 
 `--device auto` 会优先使用 CUDA GPU，若不可用才回退 CPU。
+
+文本向量增强：
+
+```powershell
+python run.py text-grid --data-dir data --output-dir experiments_text_st_valid --splits valid --text-backend sentence-transformer --text-model sentence-transformers/all-MiniLM-L6-v2 --candidate-k 50 --batch-size 256 --max-history-items 3 --base-rank-weight 1.0 --text-score-weight 0.05 --device auto --local-files-only
+```
+
+如果还没有下载 Hugging Face 模型，先去掉 `--local-files-only` 让它下载；模型缓存好后建议加回来，避免每次启动时联网检查。也可以用不需要下载模型的 hashing 后端：
+
+```powershell
+python run.py text-grid --data-dir data --output-dir experiments_text_hashing_valid --splits valid --text-backend hashing --candidate-k 50 --embedding-dim 256 --max-history-items 3 --base-rank-weight 1.0 --text-score-weight 0.05
+```
 
 三类目批量跑 SASRec：
 

@@ -3,7 +3,7 @@ name = "amazon-2023-sequential-recommender"
 version = "0.1.0"
 description = "Top-10 sequential recommender for Amazon Reviews 2023 category splits."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["numpy>=1.20"]
 
 [project.scripts]
 amazon-recsys = "recsys.cli:main"

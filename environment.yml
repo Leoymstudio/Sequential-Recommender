@@ -5,3 +5,5 @@ dependencies:
   - python=3.10
   - pip
   - numpy
+  - pip:
+      - sentence-transformers
