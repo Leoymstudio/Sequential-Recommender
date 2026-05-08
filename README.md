@@ -129,6 +129,14 @@ SASRec 默认作为二阶段重排特征与 hybrid 排名融合：
 - `--sasrec-score-weight`：SASRec 标准化分数的权重，默认较小以避免未充分训练时破坏候选顺序。
 - `--loss ce|bce`：默认 `ce`，即 sampled softmax / cross-entropy；`bce` 保留为消融对照。
 
+图增强 / LightGCN-style 重排：
+
+```powershell
+python run.py graph-grid --data-dir data --output-dir experiments_graph_full_valid --splits valid --candidate-k 50 --embedding-dim 64 --layers 1 --epochs 1 --batch-size 4096 --lr 0.003 --graph-score-weight 0.03 --device auto
+```
+
+当前图模块用 user-item BPR embedding 训练，再进行 LightGCN 风格的归一化邻接传播，最后与 hybrid base rank 融合重排。
+
 ## 架构
 
 ```mermaid

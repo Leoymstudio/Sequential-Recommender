@@ -155,6 +155,31 @@ python run.py text-grid --data-dir data --output-dir experiments_text_st_valid -
 
 结论：文本向量增强在三类验证集和测试集上均稳定提升，是目前比 SASRec 更直接有效的高级路线。
 
+## 图增强：LightGCN-style Reranker
+
+已实现 PRD 中的图增强路线。当前图模块流程：
+
+1. 从 train split 构建 user-item 二部图。
+2. 使用 BPR 目标训练 user/item embedding。
+3. 使用 LightGCN 风格的归一化邻接传播做图平滑。
+4. 对 `hybrid + meta` Top-50 候选执行 `base rank + graph score` 融合重排。
+
+复现命令：
+
+```powershell
+python run.py graph-grid --data-dir data --output-dir experiments_graph_full_valid --splits valid --candidate-k 50 --embedding-dim 64 --layers 1 --epochs 1 --batch-size 4096 --lr 0.003 --graph-score-weight 0.03 --device auto
+```
+
+验证集结果：
+
+| Category | Edges | Device | Graph NDCG@10 |
+| :--- | ---: | :--- | ---: |
+| Industrial_and_Scientific | 310,977 | cuda | 0.028575 |
+| Musical_Instruments | 396,958 | cuda | 0.031011 |
+| CDs_and_Vinyl | 1,305,012 | cuda | 0.057212 |
+
+结论：图增强工程链路已完成，但当前 1 epoch、低权重融合下整体不如 SentenceTransformer 文本增强；CDs_and_Vinyl 有小幅正向信号。后续若继续提升图路线，应重点尝试更多 epoch、hard negative sampling、加入 `bought_together` 商品图边，以及与文本向量做三路融合。
+
 ## 复现与自检
 
 已完成：

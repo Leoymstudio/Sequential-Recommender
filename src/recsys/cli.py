@@ -8,6 +8,12 @@ from pathlib import Path
 
 from .config import DEFAULT_CATEGORIES, DEFAULT_SEED, DEFAULT_TOP_K
 from .experiments import run_experiment_grid
+from .graph_rerank import (
+    GraphRerankConfig,
+    TorchUnavailableError as GraphTorchUnavailableError,
+    run_graph_rerank_category,
+    run_graph_rerank_grid,
+)
 from .metrics import evaluate_prediction_file
 from .pipeline import run_category
 from .sasrec import SasRecConfig, TorchUnavailableError, run_sasrec_rerank_category, run_sasrec_rerank_grid
@@ -87,6 +93,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_text_grid.add_argument("--categories", nargs="+", default=list(DEFAULT_CATEGORIES), choices=DEFAULT_CATEGORIES)
     p_text_grid.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
     add_text_rerank_args(p_text_grid)
+
+    p_graph = sub.add_parser("graph-rerank", help="Rerank hybrid candidates with LightGCN-style graph embeddings")
+    p_graph.add_argument("--category", required=True, choices=DEFAULT_CATEGORIES)
+    p_graph.add_argument("--data-dir", default="data")
+    p_graph.add_argument("--output-dir", default="outputs_graph")
+    p_graph.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
+    add_graph_rerank_args(p_graph)
+
+    p_graph_grid = sub.add_parser("graph-grid", help="Run graph reranker across multiple categories")
+    p_graph_grid.add_argument("--data-dir", default="data")
+    p_graph_grid.add_argument("--output-dir", default="experiments_graph")
+    p_graph_grid.add_argument("--categories", nargs="+", default=list(DEFAULT_CATEGORIES), choices=DEFAULT_CATEGORIES)
+    p_graph_grid.add_argument("--splits", nargs="+", default=["valid"], choices=("valid", "test"))
+    add_graph_rerank_args(p_graph_grid)
     return parser
 
 
@@ -208,6 +228,36 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "graph-rerank":
+        config = graph_rerank_config_from_args(args)
+        try:
+            result = run_graph_rerank_category(
+                category=args.category,
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                splits=tuple(args.splits),
+                config=config,
+            )
+        except GraphTorchUnavailableError as exc:
+            parser.exit(1, f"{exc}\n")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "graph-grid":
+        config = graph_rerank_config_from_args(args)
+        try:
+            result = run_graph_rerank_grid(
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                categories=tuple(args.categories),
+                splits=tuple(args.splits),
+                config=config,
+            )
+        except GraphTorchUnavailableError as exc:
+            parser.exit(1, f"{exc}\n")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
@@ -287,6 +337,40 @@ def text_rerank_config_from_args(args: argparse.Namespace) -> TextRerankConfig:
         cache_dir=args.cache_dir,
         local_files_only=args.local_files_only,
         seed=args.seed,
+    )
+
+
+def add_graph_rerank_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--embedding-dim", type=int, default=64)
+    parser.add_argument("--layers", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--lr", type=float, default=0.003)
+    parser.add_argument("--reg", type=float, default=1e-6)
+    parser.add_argument("--candidate-k", type=int, default=50)
+    parser.add_argument("--base-rank-weight", type=float, default=1.0)
+    parser.add_argument("--graph-score-weight", type=float, default=0.03)
+    parser.add_argument("--no-meta", action="store_true", help="Disable lexical metadata in first-stage hybrid model")
+    parser.add_argument("--max-train-rows", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--device", default="auto")
+
+
+def graph_rerank_config_from_args(args: argparse.Namespace) -> GraphRerankConfig:
+    return GraphRerankConfig(
+        embedding_dim=args.embedding_dim,
+        layers=args.layers,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        reg=args.reg,
+        candidate_k=args.candidate_k,
+        base_rank_weight=args.base_rank_weight,
+        graph_score_weight=args.graph_score_weight,
+        use_meta=not args.no_meta,
+        max_train_rows=args.max_train_rows,
+        seed=args.seed,
+        device=args.device,
     )
 
 
